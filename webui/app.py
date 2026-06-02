@@ -206,7 +206,7 @@ def save_prediction_results(file_path, prediction_type, prediction_results, actu
         print(f"Failed to save prediction results: {e}")
         return None
 
-def create_prediction_chart(df, pred_df, lookback, pred_len, actual_df=None, historical_start_idx=0):
+def create_prediction_chart(df, pred_df, lookback, pred_len, actual_df=None, historical_start_idx=0, stock_name=None, stock_code=None):
     """Create prediction chart"""
     # Use specified historical data start position, not always from the beginning of df
     if historical_start_idx + lookback + pred_len <= len(df):
@@ -224,83 +224,118 @@ def create_prediction_chart(df, pred_df, lookback, pred_len, actual_df=None, his
     fig = go.Figure()
     
     # Add historical data (candlestick chart)
+    historical_x = historical_df['timestamps'].tolist() if 'timestamps' in historical_df.columns else historical_df.index.tolist()
     fig.add_trace(go.Candlestick(
-        x=historical_df['timestamps'] if 'timestamps' in historical_df.columns else historical_df.index,
-        open=historical_df['open'],
-        high=historical_df['high'],
-        low=historical_df['low'],
-        close=historical_df['close'],
-        name='Historical Data (400 data points)',
+        x=historical_x,
+        open=historical_df['open'].tolist(),
+        high=historical_df['high'].tolist(),
+        low=historical_df['low'].tolist(),
+        close=historical_df['close'].tolist(),
+        name=f'历史数据 ({len(historical_df)}个交易日)',
         increasing_line_color='#26A69A',
         decreasing_line_color='#EF5350'
+    ))
+    # 历史数据收盘价小字注记 (使用浅灰色细字体，避免全局缩小时重叠太乱，放大后非常清晰)
+    fig.add_trace(go.Scatter(
+        x=historical_x,
+        y=historical_df['close'].tolist(),
+        mode='text',
+        text=[f"{c:.2f}" for c in historical_df['close'].tolist()],
+        textposition='top center',
+        textfont=dict(size=8, color='rgba(120, 120, 120, 0.7)'),
+        showlegend=False,
+        hoverinfo='skip'
     ))
     
     # Add prediction data (candlestick chart)
     if pred_df is not None and len(pred_df) > 0:
-        # Calculate prediction data timestamps - ensure continuity with historical data
-        if 'timestamps' in df.columns and len(historical_df) > 0:
-            # Start from the last timestamp of historical data, create prediction timestamps with the same time interval
-            last_timestamp = historical_df['timestamps'].iloc[-1]
-            time_diff = df['timestamps'].iloc[1] - df['timestamps'].iloc[0] if len(df) > 1 else pd.Timedelta(hours=1)
-            
-            pred_timestamps = pd.date_range(
-                start=last_timestamp + time_diff,
-                periods=len(pred_df),
-                freq=time_diff
-            )
-        else:
-            # If no timestamps, use index
-            pred_timestamps = range(len(historical_df), len(historical_df) + len(pred_df))
+        # 直接使用 pred_df 已经生成好的 index 作为时间轴，确保交易日日历的连续性与准确性
+        pred_timestamps = pred_df.index
+        pred_x = pred_timestamps.tolist() if hasattr(pred_timestamps, 'tolist') else list(pred_timestamps)
         
         fig.add_trace(go.Candlestick(
-            x=pred_timestamps,
-            open=pred_df['open'],
-            high=pred_df['high'],
-            low=pred_df['low'],
-            close=pred_df['close'],
-            name='Prediction Data (120 data points)',
+            x=pred_x,
+            open=pred_df['open'].tolist(),
+            high=pred_df['high'].tolist(),
+            low=pred_df['low'].tolist(),
+            close=pred_df['close'].tolist(),
+            name=f'预测走势 ({len(pred_df)}个交易日)',
             increasing_line_color='#66BB6A',
             decreasing_line_color='#FF7043'
+        ))
+        # 预测趋势收盘价小字注记 (使用稍醒目的深绿色粗体字)
+        fig.add_trace(go.Scatter(
+            x=pred_x,
+            y=pred_df['close'].tolist(),
+            mode='text',
+            text=[f"{c:.2f}" for c in pred_df['close'].tolist()],
+            textposition='top center',
+            textfont=dict(size=9, color='#1B5E20', family='Arial-Bold'),
+            showlegend=False,
+            hoverinfo='skip'
         ))
     
     # Add actual data for comparison (if exists)
     if actual_df is not None and len(actual_df) > 0:
-        # Actual data should be in the same time period as prediction data
-        if 'timestamps' in df.columns:
-            # Actual data should use the same timestamps as prediction data to ensure time alignment
-            if 'pred_timestamps' in locals():
-                actual_timestamps = pred_timestamps
-            else:
-                # If no prediction timestamps, calculate from the last timestamp of historical data
-                if len(historical_df) > 0:
-                    last_timestamp = historical_df['timestamps'].iloc[-1]
-                    time_diff = df['timestamps'].iloc[1] - df['timestamps'].iloc[0] if len(df) > 1 else pd.Timedelta(hours=1)
-                    actual_timestamps = pd.date_range(
-                        start=last_timestamp + time_diff,
-                        periods=len(actual_df),
-                        freq=time_diff
-                    )
-                else:
-                    actual_timestamps = range(len(historical_df), len(historical_df) + len(actual_df))
-        else:
-            actual_timestamps = range(len(historical_df), len(historical_df) + len(actual_df))
+        # 实际对照走势直接使用其自带的真实时间戳
+        actual_timestamps = actual_df['timestamps'] if 'timestamps' in actual_df.columns else actual_df.index
+        actual_x = actual_timestamps.tolist() if hasattr(actual_timestamps, 'tolist') else list(actual_timestamps)
         
         fig.add_trace(go.Candlestick(
-            x=actual_timestamps,
-            open=actual_df['open'],
-            high=actual_df['high'],
-            low=actual_df['low'],
-            close=actual_df['close'],
-            name='Actual Data (120 data points)',
+            x=actual_x,
+            open=actual_df['open'].tolist(),
+            high=actual_df['high'].tolist(),
+            low=actual_df['low'].tolist(),
+            close=actual_df['close'].tolist(),
+            name=f'实际走势 ({len(actual_df)}个交易日)',
             increasing_line_color='#FF9800',
             decreasing_line_color='#F44336'
         ))
+        # 实际走势收盘价小字注记 (使用深橙色粗体字以作区分)
+        fig.add_trace(go.Scatter(
+            x=actual_x,
+            y=actual_df['close'].tolist(),
+            mode='text',
+            text=[f"{c:.2f}" for c in actual_df['close'].tolist()],
+            textposition='top center',
+            textfont=dict(size=9, color='#E65100', family='Arial-Bold'),
+            showlegend=False,
+            hoverinfo='skip'
+        ))
     
     # Update layout
+    # 获取年份范围以便放在图表标题中
+    start_year = ""
+    end_year = ""
+    if 'timestamps' in historical_df.columns and len(historical_df) > 0:
+        start_year = pd.to_datetime(historical_df['timestamps'].iloc[0]).strftime('%Y年')
+    if 'pred_timestamps' in locals() and len(pred_timestamps) > 0:
+        end_year = pd.to_datetime(pred_timestamps[-1]).strftime('%Y年')
+    elif 'timestamps' in historical_df.columns and len(historical_df) > 0:
+        end_year = pd.to_datetime(historical_df['timestamps'].iloc[-1]).strftime('%Y年')
+
+    year_range = f" {start_year}-{end_year}" if start_year and end_year else ""
+    if start_year and end_year and start_year == end_year:
+        year_range = f" {start_year}"
+
+    if stock_name and stock_code:
+        if str(stock_name).strip() != str(stock_code).strip():
+            chart_title = f'{stock_name} ({stock_code}){year_range} - Kronos金融走势预测结果'
+        else:
+            chart_title = f'{stock_code}{year_range} - Kronos金融走势预测结果'
+    elif stock_name:
+        chart_title = f'{stock_name}{year_range} - Kronos金融走势预测结果'
+    else:
+        chart_title = f'Kronos金融走势预测结果{year_range}'
+        
+    chart_title += f' (历史:{len(historical_df)}天 + 预测:{len(pred_df)}天)'
+    if actual_df is not None and len(actual_df) > 0:
+        chart_title += f' (vs {len(actual_df)}天真实走势对照)'
+        
     fig.update_layout(
-        title='Kronos Financial Prediction Results - 400 Historical Points + 120 Prediction Points vs 120 Actual Points',
-        xaxis_title='Time',
-        yaxis_title='Price',
+        title=chart_title,
+        xaxis_title='时间',
+        yaxis_title='价格',
         template='plotly_white',
         height=600,
         showlegend=True
@@ -321,8 +356,9 @@ def create_prediction_chart(df, pred_df, lookback, pred_len, actual_df=None, his
             all_timestamps = sorted(all_timestamps)
             fig.update_xaxes(
                 range=[all_timestamps[0], all_timestamps[-1]],
-                rangeslider_visible=False,
-                type='date'
+                rangeslider_visible=True,
+                type='date',
+                tickformat='%m月%d日'
             )
     
     return json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
@@ -545,7 +581,17 @@ def predict():
             # Latest data: start from beginning
             historical_start_idx = 0
         
-        chart_json = create_prediction_chart(df, pred_df, lookback, pred_len, actual_df, historical_start_idx)
+        # 提取文件名作为图表的展示名称
+        file_name = os.path.basename(file_path) if file_path else None
+        chart_json = create_prediction_chart(
+            df=df,
+            pred_df=pred_df,
+            lookback=lookback,
+            pred_len=pred_len,
+            actual_df=actual_df,
+            historical_start_idx=historical_start_idx,
+            stock_name=file_name
+        )
         
         # Prepare prediction result data - fix timestamp calculation logic
         if 'timestamps' in df.columns:
@@ -622,6 +668,250 @@ def predict():
         
     except Exception as e:
         return jsonify({'error': f'Prediction failed: {str(e)}'}), 500
+
+@app.route('/api/predict-online', methods=['POST'])
+def predict_online():
+    """Perform online real-time prediction using akshare data fetched in memory"""
+    global predictor
+    try:
+        if not MODEL_AVAILABLE or predictor is None:
+            return jsonify({'error': 'Kronos model not loaded, please load model first'}), 400
+
+        data = request.get_json()
+        stock_code = data.get('stock_code')
+        lookback = int(data.get('lookback', 400))
+        pred_len = int(data.get('pred_len', 22))
+        
+        temperature = float(data.get('temperature', 1.0))
+        top_p = float(data.get('top_p', 0.9))
+        sample_count = int(data.get('sample_count', 1))
+
+        if not stock_code:
+            return jsonify({'error': 'Stock code cannot be empty'}), 400
+        
+        # Clean stock code (ensure 6 digits)
+        stock_code = str(stock_code).strip()
+        if len(stock_code) != 6 or not stock_code.isdigit():
+            return jsonify({'error': 'Invalid stock code, must be 6 digits'}), 400
+
+        print(f"Fetching online data for stock {stock_code}...")
+        
+        # Try to import akshare
+        try:
+            import akshare as ak
+        except ImportError:
+            return jsonify({'error': 'akshare library is not installed on the server. Please run: pip install akshare'}), 500
+
+        # Calculate a wide enough date range to cover lookback trading days
+        # A-share has ~242 trading days a year. To get 400+ trading days, we need ~2 years.
+        # Let's fetch ~2.5 years (~900 calendar days) of data to be safe.
+        end_dt = datetime.datetime.now()
+        start_dt = end_dt - datetime.timedelta(days=900)
+        start_date_str = start_dt.strftime("%Y%m%d")
+        end_date_str = end_dt.strftime("%Y%m%d")
+
+        # Fetch daily history
+        max_retries = 3
+        df = None
+        for attempt in range(max_retries):
+            try:
+                # 尝试通过 akshare 获取
+                df = ak.stock_zh_a_hist(symbol=stock_code, period="daily", start_date=start_date_str, end_date=end_date_str, adjust="qfq")
+                if df is not None and not df.empty:
+                    print("Successfully fetched data via akshare.")
+                    break
+            except Exception as e:
+                print(f"Attempt {attempt+1} failed to fetch data via akshare: {e}")
+                import time
+                time.sleep(0.5)
+
+        # 如果 akshare 失败了，采用直连东方财富 HTTP API 作为 Fallback (绕过 HTTPS 代理问题)
+        if df is None or df.empty:
+            print("Akshare failed or returned empty. Falling back to direct Eastmoney HTTP request...")
+            try:
+                import random
+                import requests
+                
+                # 判断市场类型
+                if stock_code.startswith(('0', '2', '3')):
+                    market = '0'
+                else:
+                    market = '1'
+                secid = f"{market}.{stock_code}"
+                
+                url = "http://push2his.eastmoney.com/api/qt/stock/kline/get"
+                params = {
+                    'secid': secid,
+                    'fields1': 'f1,f2,f3,f4,f5,f6',
+                    'fields2': 'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61',
+                    'klt': '101',  # 日线
+                    'fqt': '1',    # 前复权
+                    'beg': start_date_str,
+                    'end': end_date_str,
+                    'lmt': '10000',
+                    'ut': 'fa5fd1943c7b386f172d6893dbfba10b',
+                    'cb': f'jQuery{random.randint(1000000, 9999999)}_{int(time.time()*1000)}'
+                }
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36',
+                    'Referer': 'https://quote.eastmoney.com/',
+                    'Accept': '*/*',
+                }
+                
+                # 强制绕过代理（包括环境变量和 Windows 系统注册表代理）
+                import os
+                old_no_proxy = os.environ.get("no_proxy")
+                os.environ["no_proxy"] = "*"
+                
+                try:
+                    response = requests.get(url, params=params, headers=headers, proxies={"http": "", "https": ""}, timeout=10)
+                finally:
+                    if old_no_proxy is not None:
+                        os.environ["no_proxy"] = old_no_proxy
+                    else:
+                        os.environ.pop("no_proxy", None)
+
+                if response.status_code == 200:
+                    text = response.text
+                    if text.startswith('/**/'):
+                        text = text[4:]
+                    start_idx = text.find('(')
+                    end_idx = text.rfind(')')
+                    if start_idx != -1 and end_idx != -1:
+                        json_str = text[start_idx + 1:end_idx]
+                        resp_data = json.loads(json_str)
+                    else:
+                        resp_data = json.loads(text)
+                        
+                    if resp_data and resp_data.get('data') is not None:
+                        klines = resp_data['data'].get('klines', [])
+                        if klines:
+                            stock_data = []
+                            for kline in klines:
+                                items = kline.split(',')
+                                if len(items) >= 6:
+                                    stock_data.append({
+                                        'timestamps': items[0],
+                                        'open': float(items[1]),
+                                        'close': float(items[2]),
+                                        'high': float(items[3]),
+                                        'low': float(items[4]),
+                                        'volume': float(items[5]),
+                                        'amount': float(items[6]) if len(items) > 6 else 0,
+                                    })
+                            if stock_data:
+                                df = pd.DataFrame(stock_data)
+                                print(f"Successfully fetched {len(df)} rows via direct Eastmoney HTTP request.")
+            except Exception as fe:
+                print(f"Fallback Direct Eastmoney fetch failed: {fe}")
+
+        if df is None or df.empty:
+            return jsonify({'error': f'Failed to fetch data for stock code {stock_code}. Please check your internet connection or try again later.'}), 400
+
+        # Rename columns to standard Kronos format
+        df.rename(columns={
+            "日期": "timestamps",
+            "开盘": "open",
+            "收盘": "close",
+            "最高": "high",
+            "最低": "low",
+            "成交量": "volume",
+            "成交额": "amount"
+        }, inplace=True)
+
+        df["timestamps"] = pd.to_datetime(df["timestamps"])
+        df = df.sort_values("timestamps").reset_index(drop=True)
+
+        # Convert numeric columns
+        numeric_cols = ["open", "high", "low", "close", "volume", "amount"]
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        df = df.dropna(subset=["open", "high", "low", "close"])
+
+        if len(df) < lookback:
+            return jsonify({'error': f'Insufficient historical data. Stock {stock_code} only has {len(df)} trading days in the last 2.5 years, but lookback window requires {lookback} days.'}), 400
+
+        # We take the latest lookback (400) trading days as input
+        x_df = df.iloc[-lookback:][["open", "high", "low", "close", "volume"]].copy()
+        x_timestamp = df.iloc[-lookback:]["timestamps"].reset_index(drop=True)
+
+        # Generate future prediction timestamps
+        # Using pd.bdate_range is a good proxy for A-share business days
+        last_date = x_timestamp.iloc[-1]
+        y_timestamp = pd.bdate_range(start=last_date + pd.Timedelta(days=1), periods=pred_len)
+        y_timestamp = pd.Series(y_timestamp, name='timestamps')
+
+        print(f"Running prediction: lookback={lookback}, pred_len={pred_len}, temperature={temperature}")
+        
+        # Run prediction
+        pred_df = predictor.predict(
+            df=x_df,
+            x_timestamp=x_timestamp,
+            y_timestamp=y_timestamp,
+            pred_len=pred_len,
+            T=temperature,
+            top_p=top_p,
+            sample_count=sample_count
+        )
+
+        # Fetch stock name for reporting purposes if available
+        stock_name = stock_code
+        try:
+            spot_df = ak.stock_zh_a_spot_em()
+            match = spot_df[spot_df["代码"] == stock_code]
+            if not match.empty:
+                stock_name = match.iloc[0]["名称"]
+            else:
+                # 尝试从基金/ETF 列表中查询名称 (支持 ETF 基金预测时显示正确的中文简称)
+                fund_df = ak.fund_etf_spot_em()
+                match = fund_df[fund_df["代码"] == stock_code]
+                if not match.empty:
+                    stock_name = match.iloc[0]["名称"]
+        except Exception:
+            pass
+
+        # Create chart using plotly
+        chart_json = create_prediction_chart(
+            df=df,
+            pred_df=pred_df,
+            lookback=lookback,
+            pred_len=pred_len,
+            actual_df=None,
+            historical_start_idx=len(df) - lookback,
+            stock_name=stock_name,
+            stock_code=stock_code
+        )
+
+        # Format prediction results
+        prediction_results = []
+        for i, (_, row) in enumerate(pred_df.iterrows()):
+            prediction_results.append({
+                'timestamp': y_timestamp[i].isoformat(),
+                'open': float(row['open']),
+                'high': float(row['high']),
+                'low': float(row['low']),
+                'close': float(row['close']),
+                'volume': float(row['volume']) if 'volume' in row else 0,
+            })
+
+        prediction_type = f"在线实时预测 ({stock_name} / {stock_code})"
+
+        return jsonify({
+            'success': True,
+            'prediction_type': prediction_type,
+            'chart': chart_json,
+            'prediction_results': prediction_results,
+            'actual_data': [],
+            'has_comparison': False,
+            'message': f'在线预测成功！已生成股票 {stock_name} ({stock_code}) 未来 {pred_len} 个交易日的趋势。'
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'在线预测失败: {str(e)}'}), 500
 
 @app.route('/api/load-model', methods=['POST'])
 def load_model():

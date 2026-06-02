@@ -522,7 +522,7 @@ if __name__ == "__main__":
         "stock_name": "昆仑万维",  # 股票名称
         "data_dir": "./data",  # 数据文件目录
         "pred_days": 100,  # 预测100个自然日
-        "output_dir": r"D:\lianghuajiaoyi\Kronos\examples\yuce"  # 输出文件目录
+        "output_dir": "./examples/yuce"  # 输出文件目录
     }
 
     # 其他股票配置示例：
