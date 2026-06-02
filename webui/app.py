@@ -955,18 +955,49 @@ def predict_online():
         # Fetch stock name for reporting purposes if available
         stock_name = stock_code
         try:
-            spot_df = ak.stock_zh_a_spot_em()
-            match = spot_df[spot_df["代码"] == stock_code]
-            if not match.empty:
-                stock_name = match.iloc[0]["名称"]
-            else:
-                # 尝试从基金/ETF 列表中查询名称 (支持 ETF 基金预测时显示正确的中文简称)
-                fund_df = ak.fund_etf_spot_em()
-                match = fund_df[fund_df["代码"] == stock_code]
+            # 1. 优先尝试从腾讯财经极简行情接口秒级获取名称
+            guess_market = 'sh' if stock_code.startswith(('5', '6', '9')) else ('sz' if stock_code.startswith(('0', '1', '2', '3')) else 'bj')
+            url = f"http://qt.gtimg.cn/q=s_{guess_market}{stock_code}"
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36'
+            }
+            import requests
+            import os
+            old_no_proxy = os.environ.get("no_proxy")
+            os.environ["no_proxy"] = "*"
+            try:
+                response = requests.get(url, headers=headers, proxies={"http": None, "https": None}, timeout=3)
+                if response.status_code == 200:
+                    # 返回结果例如：v_s_sh512480="1~沪深300金融ETF~512480~2.062~0.010~0.49~1687445~34842~~45.92~GP-A";
+                    text = response.text
+                    parts = text.split('~')
+                    if len(parts) > 1 and parts[1].strip():
+                        stock_name = parts[1].strip()
+                        print(f"Successfully fetched name for {stock_code} via Tencent API: {stock_name}")
+            finally:
+                if old_no_proxy is not None:
+                    os.environ["no_proxy"] = old_no_proxy
+                else:
+                    os.environ.pop("no_proxy", None)
+        except Exception as e:
+            print(f"Failed to fetch stock name via Tencent API: {e}")
+
+        # 2. 如果腾讯接口获取失败且依然是代码，则回退到 akshare 大表接口
+        if stock_name == stock_code:
+            try:
+                import akshare as ak
+                spot_df = ak.stock_zh_a_spot_em()
+                match = spot_df[spot_df["代码"] == stock_code]
                 if not match.empty:
                     stock_name = match.iloc[0]["名称"]
-        except Exception:
-            pass
+                else:
+                    fund_df = ak.fund_etf_spot_em()
+                    match = fund_df[fund_df["代码"] == stock_code]
+                    if not match.empty:
+                        stock_name = match.iloc[0]["名称"]
+            except Exception:
+                pass
+
 
         # Create chart using plotly
         chart_json = create_prediction_chart(
