@@ -43,6 +43,9 @@
 
 </p>
 
+> [!NOTE]
+> **声明 / Disclaimer**：本项目为个人学习与应用分支。基于原开源项目 [shiyu-coder/Kronos](https://github.com/shiyu-coder/Kronos) 进行修改和优化（支持中文界面汉化、K 线收盘价小字保留双位小数展示、便捷的一键运行脚本等），感谢原作者的开源贡献。
+
 > Kronos is the **first open-source foundation model** for financial candlesticks (K-lines), 
 > trained on data from over **45 global exchanges**.
 
