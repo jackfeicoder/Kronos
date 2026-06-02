@@ -79,5 +79,9 @@ tmp/
 data/
 webui/prediction_results/
 chart_debug.json
+scratch/
+implementation_plan.md
+
+
 
 

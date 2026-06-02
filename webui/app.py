@@ -669,76 +669,90 @@ def predict():
     except Exception as e:
         return jsonify({'error': f'Prediction failed: {str(e)}'}), 500
 
-@app.route('/api/predict-online', methods=['POST'])
-def predict_online():
-    """Perform online real-time prediction using akshare data fetched in memory"""
-    global predictor
+def fetch_stock_data_from_pool(stock_code, start_date_str, end_date_str):
+    """
+    智能多源数据获取接口池，按优先级依次尝试获取数据。
+    """
+    import akshare as ak
+    import requests
+    import json
+    import random
+    import time
+    import pandas as pd
+
+    # 1. 尝试使用 Akshare SDK（智能分流）
+    is_fund = stock_code.startswith(('1', '5'))
+    df = None
+
+    print(f"--- [API Pool] Fetching {stock_code} (IsFund: {is_fund}) ---")
+
+    # 第一层：Akshare SDK
     try:
-        if not MODEL_AVAILABLE or predictor is None:
-            return jsonify({'error': 'Kronos model not loaded, please load model first'}), 400
+        if is_fund:
+            print("Layer 1: Trying ak.fund_etf_hist_em...")
+            df = ak.fund_etf_hist_em(symbol=stock_code, period="daily", start_date=start_date_str, end_date=end_date_str, adjust="qfq")
+            if df is not None and not df.empty:
+                df.rename(columns={
+                    "日期": "timestamps",
+                    "开盘": "open",
+                    "收盘": "close",
+                    "最高": "high",
+                    "最低": "low",
+                    "成交量": "volume",
+                    "成交额": "amount"
+                }, inplace=True)
+                print("Layer 1 (ak.fund_etf_hist_em) succeeded.")
+        else:
+            print("Layer 1: Trying ak.stock_zh_a_hist...")
+            df = ak.stock_zh_a_hist(symbol=stock_code, period="daily", start_date=start_date_str, end_date=end_date_str, adjust="qfq")
+            if df is not None and not df.empty:
+                df.rename(columns={
+                    "日期": "timestamps",
+                    "开盘": "open",
+                    "收盘": "close",
+                    "最高": "high",
+                    "最低": "low",
+                    "成交量": "volume",
+                    "成交额": "amount"
+                }, inplace=True)
+                print("Layer 1 (ak.stock_zh_a_hist) succeeded.")
+    except Exception as e:
+        print(f"Layer 1 (Akshare preferred) failed: {e}")
 
-        data = request.get_json()
-        stock_code = data.get('stock_code')
-        lookback = int(data.get('lookback', 400))
-        pred_len = int(data.get('pred_len', 22))
-        
-        temperature = float(data.get('temperature', 1.0))
-        top_p = float(data.get('top_p', 0.9))
-        sample_count = int(data.get('sample_count', 1))
-
-        if not stock_code:
-            return jsonify({'error': 'Stock code cannot be empty'}), 400
-        
-        # Clean stock code (ensure 6 digits)
-        stock_code = str(stock_code).strip()
-        if len(stock_code) != 6 or not stock_code.isdigit():
-            return jsonify({'error': 'Invalid stock code, must be 6 digits'}), 400
-
-        print(f"Fetching online data for stock {stock_code}...")
-        
-        # Try to import akshare
+    # 如果首选失败，尝试备用 Akshare 接口
+    if df is None or df.empty:
         try:
-            import akshare as ak
-        except ImportError:
-            return jsonify({'error': 'akshare library is not installed on the server. Please run: pip install akshare'}), 500
-
-        # Calculate a wide enough date range to cover lookback trading days
-        # A-share has ~242 trading days a year. To get 400+ trading days, we need ~2 years.
-        # Let's fetch ~2.5 years (~900 calendar days) of data to be safe.
-        end_dt = datetime.datetime.now()
-        start_dt = end_dt - datetime.timedelta(days=900)
-        start_date_str = start_dt.strftime("%Y%m%d")
-        end_date_str = end_dt.strftime("%Y%m%d")
-
-        # Fetch daily history
-        max_retries = 3
-        df = None
-        for attempt in range(max_retries):
-            try:
-                # 尝试通过 akshare 获取
+            if is_fund:
+                print("Layer 1 Fallback: Trying ak.stock_zh_a_hist...")
                 df = ak.stock_zh_a_hist(symbol=stock_code, period="daily", start_date=start_date_str, end_date=end_date_str, adjust="qfq")
-                if df is not None and not df.empty:
-                    print("Successfully fetched data via akshare.")
-                    break
-            except Exception as e:
-                print(f"Attempt {attempt+1} failed to fetch data via akshare: {e}")
-                import time
-                time.sleep(0.5)
+            else:
+                print("Layer 1 Fallback: Trying ak.fund_etf_hist_em...")
+                df = ak.fund_etf_hist_em(symbol=stock_code, period="daily", start_date=start_date_str, end_date=end_date_str, adjust="qfq")
+            
+            if df is not None and not df.empty:
+                df.rename(columns={
+                    "日期": "timestamps",
+                    "开盘": "open",
+                    "收盘": "close",
+                    "最高": "high",
+                    "最低": "low",
+                    "成交量": "volume",
+                    "成交额": "amount"
+                }, inplace=True)
+                print("Layer 1 Fallback succeeded.")
+        except Exception as e:
+            print(f"Layer 1 Fallback failed: {e}")
 
-        # 如果 akshare 失败了，采用直连东方财富 HTTP API 作为 Fallback (绕过 HTTPS 代理问题)
-        if df is None or df.empty:
-            print("Akshare failed or returned empty. Falling back to direct Eastmoney HTTP request...")
+    # 第二层：东方财富直连 HTTP 接口 (双市场自动轮询)
+    if df is None or df.empty:
+        print("Layer 2: Trying Eastmoney direct HTTP...")
+        guess_market = '0' if stock_code.startswith(('0', '1', '2', '3')) else '1'
+        fallback_market = '1' if guess_market == '0' else '0'
+
+        for mkt in [guess_market, fallback_market]:
             try:
-                import random
-                import requests
-                
-                # 判断市场类型
-                if stock_code.startswith(('0', '2', '3')):
-                    market = '0'
-                else:
-                    market = '1'
-                secid = f"{market}.{stock_code}"
-                
+                print(f"Trying Eastmoney for market {mkt}...")
+                secid = f"{mkt}.{stock_code}"
                 url = "http://push2his.eastmoney.com/api/qt/stock/kline/get"
                 params = {
                     'secid': secid,
@@ -757,14 +771,14 @@ def predict_online():
                     'Referer': 'https://quote.eastmoney.com/',
                     'Accept': '*/*',
                 }
-                
-                # 强制绕过代理（包括环境变量和 Windows 系统注册表代理）
+
+                # 强制绕过代理
                 import os
                 old_no_proxy = os.environ.get("no_proxy")
                 os.environ["no_proxy"] = "*"
                 
                 try:
-                    response = requests.get(url, params=params, headers=headers, proxies={"http": "", "https": ""}, timeout=10)
+                    response = requests.get(url, params=params, headers=headers, proxies={"http": None, "https": None}, timeout=8)
                 finally:
                     if old_no_proxy is not None:
                         os.environ["no_proxy"] = old_no_proxy
@@ -801,34 +815,116 @@ def predict_online():
                                     })
                             if stock_data:
                                 df = pd.DataFrame(stock_data)
-                                print(f"Successfully fetched {len(df)} rows via direct Eastmoney HTTP request.")
+                                print(f"Layer 2 succeeded (market {mkt}).")
+                                break
             except Exception as fe:
-                print(f"Fallback Direct Eastmoney fetch failed: {fe}")
+                print(f"Layer 2 failed for market {mkt}: {fe}")
 
-        if df is None or df.empty:
-            return jsonify({'error': f'Failed to fetch data for stock code {stock_code}. Please check your internet connection or try again later.'}), 400
+    # 第三层：腾讯财经直连 HTTP 接口 (双市场自动轮询)
+    if df is None or df.empty:
+        print("Layer 3: Trying Tencent Finance direct HTTP...")
+        guess_market = 'sz' if stock_code.startswith(('0', '1', '2', '3')) else 'sh'
+        fallback_market = 'sh' if guess_market == 'sz' else 'sz'
 
-        # Rename columns to standard Kronos format
-        df.rename(columns={
-            "日期": "timestamps",
-            "开盘": "open",
-            "收盘": "close",
-            "最高": "high",
-            "最低": "low",
-            "成交量": "volume",
-            "成交额": "amount"
-        }, inplace=True)
+        for mkt in [guess_market, fallback_market]:
+            try:
+                print(f"Trying Tencent for market {mkt}...")
+                url = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+                params = {
+                    'param': f"{mkt}{stock_code},day,,,800,qfq"
+                }
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36',
+                    'Accept': '*/*',
+                }
 
+                # 强制绕过代理
+                import os
+                old_no_proxy = os.environ.get("no_proxy")
+                os.environ["no_proxy"] = "*"
+                
+                try:
+                    response = requests.get(url, params=params, headers=headers, proxies={"http": None, "https": None}, timeout=8)
+                finally:
+                    if old_no_proxy is not None:
+                        os.environ["no_proxy"] = old_no_proxy
+                    else:
+                        os.environ.pop("no_proxy", None)
+
+                if response.status_code == 200:
+                    data = response.json()
+                    symbol_key = f"{mkt}{stock_code}"
+                    if 'data' in data and symbol_key in data['data']:
+                        day_data = data['data'][symbol_key].get('day', [])
+                        if day_data:
+                            stock_data = []
+                            for item in day_data:
+                                if len(item) >= 6:
+                                    stock_data.append({
+                                        'timestamps': item[0],
+                                        'open': float(item[1]),
+                                        'close': float(item[2]),
+                                        'high': float(item[3]),
+                                        'low': float(item[4]),
+                                        'volume': float(item[5]) * 100,
+                                    })
+                            if stock_data:
+                                df = pd.DataFrame(stock_data)
+                                print(f"Layer 3 succeeded (market {mkt}).")
+                                break
+            except Exception as te:
+                print(f"Layer 3 failed for market {mkt}: {te}")
+
+    # 4. 数据统一格式处理
+    if df is not None and not df.empty:
         df["timestamps"] = pd.to_datetime(df["timestamps"])
         df = df.sort_values("timestamps").reset_index(drop=True)
-
-        # Convert numeric columns
-        numeric_cols = ["open", "high", "low", "close", "volume", "amount"]
+        numeric_cols = ["open", "high", "low", "close", "volume"]
         for col in numeric_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
-
         df = df.dropna(subset=["open", "high", "low", "close"])
+
+    return df
+
+@app.route('/api/predict-online', methods=['POST'])
+def predict_online():
+    """Perform online real-time prediction using akshare data fetched in memory"""
+    global predictor
+    try:
+        if not MODEL_AVAILABLE or predictor is None:
+            return jsonify({'error': 'Kronos model not loaded, please load model first'}), 400
+
+        data = request.get_json()
+        stock_code = data.get('stock_code')
+        lookback = int(data.get('lookback', 400))
+        pred_len = int(data.get('pred_len', 22))
+        
+        temperature = float(data.get('temperature', 1.0))
+        top_p = float(data.get('top_p', 0.9))
+        sample_count = int(data.get('sample_count', 1))
+
+        if not stock_code:
+            return jsonify({'error': 'Stock code cannot be empty'}), 400
+        
+        # Clean stock code (ensure 6 digits)
+        stock_code = str(stock_code).strip()
+        if len(stock_code) != 6 or not stock_code.isdigit():
+            return jsonify({'error': 'Invalid stock code, must be 6 digits'}), 400
+
+        print(f"Fetching online data for stock {stock_code}...")
+
+        # Calculate date range
+        end_dt = datetime.datetime.now()
+        start_dt = end_dt - datetime.timedelta(days=900)
+        start_date_str = start_dt.strftime("%Y%m%d")
+        end_date_str = end_dt.strftime("%Y%m%d")
+
+        # 从接口池获取数据
+        df = fetch_stock_data_from_pool(stock_code, start_date_str, end_date_str)
+
+        if df is None or df.empty:
+            return jsonify({'error': f'Failed to fetch data for stock code {stock_code}. Please check your internet connection or try again later.'}), 400
 
         if len(df) < lookback:
             return jsonify({'error': f'Insufficient historical data. Stock {stock_code} only has {len(df)} trading days in the last 2.5 years, but lookback window requires {lookback} days.'}), 400
